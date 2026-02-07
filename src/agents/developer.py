@@ -6,6 +6,8 @@ Writes, modifies, and executes code
 import subprocess
 import tempfile
 import os
+import json
+import time
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
 import shutil
@@ -13,9 +15,27 @@ import logging
 
 from src.agents.base_agent import BaseAgent, AgentCapability, AgentContext, AgentResponse
 from src.execution.command_executor import CommandExecutor
-from src.tools.file_manager import FileManager
 from src.validation.lint_engine import LintEngine
 
+# Import FileManager from the correct location
+try:
+    from src.tools.file_manager import FileManager
+except ImportError:
+    # Create a simple FileManager if not available
+    class FileManager:
+        def __init__(self):
+            pass
+        def read_file(self, file_path: str) -> Optional[str]:
+            try:
+                return Path(file_path).read_text(encoding='utf-8')
+            except:
+                return None
+        def write_file(self, file_path: str, content: str) -> bool:
+            try:
+                Path(file_path).write_text(content, encoding='utf-8')
+                return True
+            except:
+                return False
 
 class DeveloperAgent(BaseAgent):
     """

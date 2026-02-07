@@ -6,6 +6,7 @@ All agents inherit from this base class
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
+from enum import Enum
 import logging
 import time
 

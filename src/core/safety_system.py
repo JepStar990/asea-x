@@ -3,6 +3,8 @@ Safety system for ASEA-X
 Prevents dangerous operations and enforces safety constraints
 """
 
+from __future__ import annotations
+
 import re
 import shlex
 from typing import List, Set, Optional, Tuple
