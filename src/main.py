@@ -453,20 +453,21 @@ def start(
 ):
     """Start ASEA-X system with enhanced features"""
     asea_x = ASEAX(workdir)
-    
-    # Setup signal handlers
-    def signal_handler(signum, frame):
-        console.print("\n[yellow]Shutting down...[/yellow]")
-        asyncio.run(asea_x.stop())
-        sys.exit(0)
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
+
     # Start system
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
+
+    # Setup signal handlers (schedule stop on the running loop)
+    def signal_handler(signum, frame):
+        console.print("\n[yellow]Shutting down...[/yellow]")
+        # Schedule coroutine safely onto the existing loop
+        asyncio.run_coroutine_threadsafe(asea_x.stop(), loop)
+        loop.call_soon_threadsafe(loop.stop)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     try:
         # Start system
         success = loop.run_until_complete(asea_x.start())
