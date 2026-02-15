@@ -497,13 +497,13 @@ class DeveloperAgent(BaseAgent):
                 
                 # Parse results
                 if result.returncode == 0:
-                    message = "✅ All tests passed!"
+                    message = "All tests passed!"
                     success = True
                 else:
                     # Count failures
                     lines = result.stdout.split('\n')
                     failed = [l for l in lines if "FAILED" in l]
-                    message = f"❌ Tests failed: {len(failed)} failures"
+                    message = f"Tests failed: {len(failed)} failures"
                     success = False
                 
                 return AgentResponse(
@@ -605,7 +605,7 @@ if __name__ == "__main__":
             else:
                 return AgentResponse(
                     success=True,
-                    message="✅ No linting issues found",
+                    message="No linting issues found",
                     data=result
                 )
                 
