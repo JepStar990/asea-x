@@ -1,4 +1,3 @@
-```markdown
 # ASEA-X: Complete System Documentation
 
 📚 **Table of Contents**
