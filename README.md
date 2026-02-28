@@ -94,7 +94,7 @@ ASEA-X uses a layered system:
 ### **Installation**
 
 ```bash
-git clone <your-repo-url>
+git clone [https://github.com/JepStar990/asea-x.git]
 cd asea-x-main
 
 python -m venv venv
