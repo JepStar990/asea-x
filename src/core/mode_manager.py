@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
 import logging
+import time
 
 from pydantic import BaseModel, validator
 
@@ -140,14 +141,18 @@ class ModeManager:
         self.transition_history: list[ModeTransition] = []
         self.logger = logging.getLogger(__name__)
     
-    def can_transition(self, to_mode: SystemMode, 
-                      context: Optional[Dict[str, Any]] = None) -> tuple[bool, str]:
+    def can_transition(self, to_mode: SystemMode,
+                  context: Optional[Dict[str, Any]] = None) -> tuple[bool, str]:
         """
         Check if transition to target mode is valid
-        
+
         Returns:
             tuple[bool, str]: (can_transition, reason)
         """
+        # ✅ No-op: already in requested mode
+        if to_mode == self.current_mode:
+            return True, ""
+
         # Check basic transition validity
         if to_mode not in self.VALID_TRANSITIONS.get(self.current_mode, set()):
             return False, f"Invalid transition from {self.current_mode} to {to_mode}"
@@ -173,17 +178,22 @@ class ModeManager:
         # All checks passed
         return True, ""
     
-    def transition(self, to_mode: SystemMode, reason: str, 
-                  user_initiated: bool = False,
-                  metadata: Optional[Dict[str, Any]] = None) -> bool:
+    def transition(self, to_mode: SystemMode, reason: str,
+              user_initiated: bool = False,
+              metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
         Transition to a new mode
-        
+
         Returns:
             bool: True if transition was successful
         """
+        # ✅ No-op: already in requested mode
+        if to_mode == self.current_mode:
+            self.logger.info(f"No-op transition requested: already in {to_mode}")
+            return True
+
         can_transition, error = self.can_transition(to_mode, metadata)
-        
+
         if not can_transition:
             self.logger.error(f"Cannot transition to {to_mode}: {error}")
             return False

@@ -57,3 +57,6 @@ pre-commit
 
 # Additional for agents
 #difflib
+langchain_community
+langchain_openai
+langchain_text_splitters

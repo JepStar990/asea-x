@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
+import time
 from datetime import datetime
 
 from pydantic import BaseModel, Field, validator
@@ -25,12 +26,14 @@ from src.llm.deepseek_client import DeepSeekClient
 
 class OrchestratorDecision(BaseModel):
     """Decision made by orchestrator"""
-    action: str
-    target_agent: str
-    reason: str
-    confidence: float = Field(ge=0.0, le=1.0)
+    action: str = "chat"
+    target_agent: Optional[str] = None  # None means "use chat handler"
+    reason: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     requires_confirmation: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "ignore"}
 
 
 class TaskProgress(BaseModel):
@@ -151,12 +154,14 @@ class Orchestrator:
         command, args = self._parse_command(user_input)
         
         # Handle system commands
-        if command in self._get_system_commands():
+        if command and command in self._get_system_commands():
             return await self._handle_system_command(command, args, user_input)
         
         # Analyze user intent
         intent = await self._analyze_intent(user_input)
-        
+        # Ensure raw input is always present
+        intent["raw_input"] = user_input
+
         # Update state
         self.state_manager.update_state(current_task=intent.get("task", "unknown"))
         
@@ -177,19 +182,23 @@ class Orchestrator:
         
         return response
     
-    def _parse_command(self, input_str: str) -> tuple[str, List[str]]:
-        """Parse command string"""
+    def _parse_command(self, input_str: str) -> tuple[Optional[str], List[str]]:
+        """Parse command string.
+
+        Returns:
+            (command, args) where command is None for normal (non-slash) input.
+        """
         input_str = input_str.strip()
-        
-        # Check for slash commands
+
+        # Slash commands only
         if input_str.startswith('/'):
             parts = input_str[1:].split(maxsplit=1)
             command = parts[0].lower()
             args = parts[1].split() if len(parts) > 1 else []
             return command, args
-        
-        # Default to chat mode
-        return "chat", [input_str]
+
+        # Normal user text is NOT a command
+        return None, []
     
     def _get_system_commands(self) -> Set[str]:
         """Get supported system commands"""
@@ -343,12 +352,28 @@ class Orchestrator:
         
         try:
             response = self.llm_client.chat_completion([
-                {"role": "system", "content": "You are an intent analyzer for ASEA-X."},
+                {"role": "system", "content": "You are an intent analyzer for ASEA-X. Output ONLY valid JSON. No markdown, no backticks, no extra text."},
                 {"role": "user", "content": prompt}
             ])
             
             # Parse response
-            intent_data = json.loads(response.content)
+            raw = (response.content or "").strip()
+
+            # Strip common markdown fences if present
+            if raw.startswith("```"):
+                raw = raw.strip("`")
+                raw = raw.replace("json", "", 1).strip()
+
+            # Try to extract a JSON object even if extra text exists
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                raw_json = raw[start:end+1]
+            else:
+                raw_json = raw  # fall back to whatever we have
+
+            # Parse response
+            intent_data = json.loads(raw_json)
             
             # Cache result
             self.user_intent_cache[cache_key] = intent_data
@@ -391,6 +416,11 @@ class Orchestrator:
         
         # Decision matrix based on intent and current mode
         decision_matrix = {
+            "chat_general": {
+                "target": None,
+                "action": "chat",
+                "requires_confirmation": False
+            },
             "planning_request": {
                 "target": "planner",
                 "action": "create_plan",
@@ -401,24 +431,33 @@ class Orchestrator:
                 "action": "write_code",
                 "requires_confirmation": False
             },
-            "debugging_request": {
-                "target": "debugger",
-                "action": "debug_code",
+            "file_operation": {
+                "target": "developer",
+                "action": "file_operation",
                 "requires_confirmation": False
             },
-            "linting_request": {
-                "target": "linter",
-                "action": "lint_code",
+            "dependency_request": {
+                "target": "developer",
+                "action": "manage_dependencies",
+                "requires_confirmation": True  # safer
+            },
+            "testing_request": {
+                "target": "developer",
+                "action": "write_tests",
                 "requires_confirmation": False
             },
             "documentation_request": {
-                "target": "developer",  # Developer handles docs too
+                "target": "developer",
                 "action": "write_documentation",
+                "requires_confirmation": False
+            },
+            "system_command": {
+                "target": None,
+                "action": "chat",
                 "requires_confirmation": False
             }
         }
-        
-        # Get decision from matrix or default to chat
+
         decision_info = decision_matrix.get(category, {
             "target": None,
             "action": "chat",
@@ -573,6 +612,7 @@ class Orchestrator:
         
         try:
             response = self.llm_client.chat_completion([
+                {"role": "system", "content": "You are ASEA-X, an Autonomous Software Engineering Agent."},
                 {"role": "system", "content": prompt}
             ])
             

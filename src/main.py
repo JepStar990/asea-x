@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 import logging
+import time
+import threading
 
 import typer
 from rich.console import Console
@@ -29,6 +31,14 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[RichHandler(rich_tracebacks=True)]
 )
+
+file_handler = logging.FileHandler("asea-x.log")
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+))
+
+logging.getLogger().addHandler(file_handler)
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -96,8 +106,12 @@ class ASEAX:
         if self.git_manager.is_initialized():
             self.git_manager.setup_hooks()
         
-        # Start UI
-        self.ui.start()
+        # DO NOT start the UI here.
+        # The UI is blocking (it uses input()) and would freeze the asyncio event loop.
+        # UI is started from the Typer command in src/main.py after the loop is running.
+        if self.ui:
+            # Make sure UI knows which asyncio loop to schedule work onto.
+            self.ui.set_loop(asyncio.get_running_loop())
         
         self.running = True
         logger.info("ASEA-X system started successfully")
@@ -418,20 +432,6 @@ class ASEAX:
         
         else:
             return f"Unknown monitor command: {subcommand}"
-    
-    async def interactive_session(self):
-        """Start interactive session with enhanced UI"""
-        # UI is already running, just wait for exit
-        console.print("[bold cyan]ASEA-X Interactive Mode[/bold cyan]")
-        console.print("UI is running. Use the terminal interface for commands.")
-        console.print("Type 'exit' in the UI or press Ctrl+C here to quit.\n")
-        
-        while self.running:
-            try:
-                await asyncio.sleep(1)
-            except KeyboardInterrupt:
-                break
-
 
 @app.command()
 def start(
@@ -454,45 +454,83 @@ def start(
     """Start ASEA-X system with enhanced features"""
     asea_x = ASEAX(workdir)
 
-    # Start system
+    # Create and set event loop (this loop will run in a BACKGROUND THREAD)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # Setup signal handlers (schedule stop on the running loop)
-    def signal_handler(signum, frame):
-        console.print("\n[yellow]Shutting down...[/yellow]")
-        # Schedule coroutine safely onto the existing loop
-        asyncio.run_coroutine_threadsafe(asea_x.stop(), loop)
-        loop.call_soon_threadsafe(loop.stop)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
+    # Start system initialization on this loop
     try:
-        # Start system
         success = loop.run_until_complete(asea_x.start())
         if not success:
             console.print("[red]Failed to start ASEA-X[/red]")
+            loop.close()
             sys.exit(1)
-        
-        # Start interactive session if requested
-        if interactive:
-            if ui:
-                # UI runs in its own thread, just wait
-                console.print("[green]✅ Rich UI started. Switch to UI window for interaction.[/green]")
-                console.print("[yellow]⚠️  This terminal is now for monitoring only.[/yellow]")
-            loop.run_until_complete(asea_x.interactive_session())
-        else:
-            # Keep running for API mode
-            console.print("[yellow]Running in API mode. Press Ctrl+C to exit.[/yellow]")
+
+        # Background thread that runs the asyncio loop forever
+        def run_loop():
+            asyncio.set_event_loop(loop)
             loop.run_forever()
-            
+
+        loop_thread = threading.Thread(target=run_loop, daemon=True)
+        loop_thread.start()
+
+        # Setup signal handlers (run in MAIN thread)
+        def signal_handler(signum, frame):
+            console.print("\n[yellow]Shutting down...[/yellow]")
+            # Tell UI to stop
+            try:
+                asea_x.ui.running = False
+                asea_x.ui.stop()
+            except Exception:
+                pass
+
+            # Stop system asynchronously
+            try:
+                fut = asyncio.run_coroutine_threadsafe(asea_x.stop(), loop)
+                fut.result(timeout=10)
+            except Exception:
+                pass
+
+            # Stop loop
+            loop.call_soon_threadsafe(loop.stop)
+
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
+        if ui:
+            console.print("[green]✅ Rich UI started.[/green]")
+            console.print("[yellow]Press Ctrl+C to exit.[/yellow]")
+
+            # IMPORTANT: UI runs in MAIN thread (blocking input)
+            asea_x.ui.start()
+        else:
+            console.print("[yellow]Running without UI. Press Ctrl+C to exit.[/yellow]")
+            # If no UI, just wait here while loop runs
+            try:
+                while True:
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                pass
+
     except KeyboardInterrupt:
         console.print("\n[yellow]Shutting down...[/yellow]")
     finally:
-        loop.run_until_complete(asea_x.stop())
-        loop.close()
+        # Clean shutdown
+        try:
+            fut = asyncio.run_coroutine_threadsafe(asea_x.stop(), loop)
+            fut.result(timeout=10)
+        except Exception:
+            pass
 
+        loop.call_soon_threadsafe(loop.stop)
+
+        # Give background loop thread time to exit
+        try:
+            loop_thread.join(timeout=2)
+        except Exception:
+            pass
+
+        loop.close()
 
 @app.command()
 def demo():
