@@ -210,3 +210,8 @@ __marimo__/
 workdir/
 *.save
 
+
+# Runtime / generated
+workdir/
+asea-x.log
+*.save
