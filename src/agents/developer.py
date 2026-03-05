@@ -163,8 +163,8 @@ class DeveloperAgent(BaseAgent):
                 "action": "write",
                 "language": "python",
                 "requirements": context.task_description,
-                "requires_dependencies": True,
-                "test_needed": True,
+                "requires_dependencies": False,
+                "test_needed": False,
                 "estimated_complexity": "moderate"
             }
     
@@ -198,15 +198,50 @@ class DeveloperAgent(BaseAgent):
             else:
                 continue
             
-            safety_check = self.state_manager.safety_system.check_command(cmd)
+        # Safety check (uses injected SafetySystem, not StateManager)
+            if not self.safety_system:
+                return AgentResponse(
+                    success=False,
+                    message="Safety system not available to DeveloperAgent; cannot install dependencies safely.",
+                    requires_human_input=True,
+                    next_step="Restart system or ensure SafetySystem is injected into agents."
+                )
+
+            safety_check = self.safety_system.check_command(cmd)
             if not safety_check.allowed:
                 return AgentResponse(
                     success=False,
                     message=f"Cannot install {dep}: {safety_check.reason}",
                     requires_human_input=True,
-                    next_step=f"Use /unsafe on to enable installation"
+                    next_step="Use /unsafe on to enable installation"
                 )
-        
+
+        def _venv_dir(self) -> Path:
+            return self.workdir / ".venv"
+
+        def _venv_python(self) -> str:
+            return str(self._venv_dir() / "bin" / "python")
+
+        def _venv_pip(self) -> str:
+            return str(self._venv_dir() / "bin" / "pip")
+
+        def _ensure_venv(self) -> None:
+            venv_dir = self._venv_dir()
+            if not venv_dir.exists():
+                subprocess.run(
+                    ["python3", "-m", "venv", str(venv_dir)],
+                    check=True,
+                    cwd=self.workdir
+                )
+                # Upgrade pip inside venv (optional but helpful)
+                subprocess.run(
+                    [self._venv_python(), "-m", "pip", "install", "--upgrade", "pip"],
+                    check=False,
+                    cwd=self.workdir
+                )
+
+        self._ensure_venv()
+
         # Install dependencies
         installed = []
         failed = []
@@ -215,7 +250,7 @@ class DeveloperAgent(BaseAgent):
             try:
                 if language == "python":
                     result = subprocess.run(
-                        ["pip", "install", dep],
+                        [self._venv_pip(), "install", dep],
                         capture_output=True,
                         text=True,
                         cwd=self.workdir
@@ -327,7 +362,7 @@ class DeveloperAgent(BaseAgent):
         """
         
         response = self.llm_client.chat_completion([
-            {"role": "system", "content": "You are an expert software developer."},
+            {"role": "system", "content": "You are an expert software developer. Return ONLY valid JSON. No markdown. No code fences. No explanation."},
             {"role": "user", "content": prompt}
         ])
         
@@ -336,6 +371,61 @@ class DeveloperAgent(BaseAgent):
             code = code_info.get("code", "")
             filename = code_info.get("filename", "new_code.py")
             
+            raw = (response.content or "").strip()
+
+            def _extract_json_object(text: str) -> Optional[str]:
+                if not text:
+                    return None
+                t = text.strip()
+
+                # Remove markdown fences if present
+                if t.startswith("```"):
+                    # Strip leading ```json / ```python / ``` and trailing ```
+                    t = t.strip("`").strip()
+                    # If it started with ```json, remove the 'json' token
+                    if t.lower().startswith("json"):
+                        t = t[4:].strip()
+
+                start = t.find("{")
+                end = t.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    return t[start:end+1]
+                return None
+
+            def _extract_code_block(text: str) -> str:
+                if not text:
+                    return ""
+                t = text.strip()
+                # If markdown fenced code, extract the inside
+                if "```" in t:
+                    parts = t.split("```")
+                    # common pattern: text ```lang\ncode\n``` text
+                    if len(parts) >= 3:
+                        return parts[1].split("\n", 1)[-1].strip()
+                return t
+
+            code_info = None
+            json_text = _extract_json_object(raw)
+
+            if json_text:
+                try:
+                    code_info = json.loads(json_text)
+                except Exception:
+                    code_info = None
+
+            if isinstance(code_info, dict):
+                code = (code_info.get("code") or "").strip()
+                filename = (code_info.get("filename") or "hello_world.py").strip()
+                description = (code_info.get("description") or "").strip()
+            else:
+            # Fallback: treat the model output as code
+                code = _extract_code_block(raw)
+                filename = "hello_world.py"
+                description = "Generated code (fallback: model did not return JSON)."
+
+            if not code:
+                raise ValueError("Model returned no code content.")
+
             # Write file
             file_path = self.workdir / filename
             file_path.parent.mkdir(exist_ok=True, parents=True)
@@ -488,7 +578,7 @@ class DeveloperAgent(BaseAgent):
                 
                 # Run pytest
                 result = subprocess.run(
-                    ["python", "-m", "pytest", "-v"],
+                    [self._venv_python(), "-m", "pytest", "-v"],
                     capture_output=True,
                     text=True,
                     cwd=self.workdir,

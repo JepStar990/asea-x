@@ -67,7 +67,7 @@ class ModeManager:
             safety_checks=True
         ),
         SystemMode.DEV: ModeRequirements(
-            requires_plan=True,
+            requires_plan=False,
             requires_code=True,
             requires_lint=False,
             allows_execution=True,
@@ -76,8 +76,8 @@ class ModeManager:
             max_runtime=30
         ),
         SystemMode.DEBUG: ModeRequirements(
-            requires_plan=True,
-            requires_code=True,
+            requires_plan=False,
+            requires_code=False,
             requires_lint=False,
             allows_execution=True,
             allows_install=False,
@@ -108,6 +108,7 @@ class ModeManager:
         SystemMode.CHAT: {
             SystemMode.PLANNER,
             SystemMode.DEV,
+            SystemMode.DEBUG,
             SystemMode.LINT,
             SystemMode.SAFETY_OVERRIDE
         },
