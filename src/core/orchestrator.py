@@ -98,6 +98,7 @@ class Orchestrator:
         for agent in [planner, developer, linter, debugger]:
             agent.set_llm_client(self.llm_client)
             agent.set_state_manager(self.state_manager)
+            agent.set_safety_system(self.safety_system)
         
         # Register agents
         self.agents = {

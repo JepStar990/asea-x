@@ -174,6 +174,8 @@ class TerminalUI:
                 self._update_tasks()
                 self._update_progress()
                 self._update_footer()
+                if self.live:
+                    self.live.refresh()
 
                 time.sleep(0.25)  # Update 4 times per second
 

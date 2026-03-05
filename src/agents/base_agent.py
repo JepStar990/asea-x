@@ -4,14 +4,15 @@ All agents inherit from this base class
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
 import time
 
 from pydantic import BaseModel, Field
-
+if TYPE_CHECKING:
+    from src.core.safety_system import SafetySystem
 
 class AgentCapability(str, Enum):
     """Agent capabilities"""
@@ -65,7 +66,8 @@ class BaseAgent(ABC):
         self.logger = logging.getLogger(f"agent.{name}")
         self.llm_client = None
         self.state_manager = None
-        
+        self.safety_system: Optional["SafetySystem"] = None
+
     def set_llm_client(self, llm_client):
         """Set LLM client for agent"""
         self.llm_client = llm_client
@@ -74,6 +76,10 @@ class BaseAgent(ABC):
         """Set state manager for agent"""
         self.state_manager = state_manager
     
+    def set_safety_system(self, safety_system):
+        """Set safety system for agent"""
+        self.safety_system = safety_system
+
     def has_capability(self, capability: AgentCapability) -> bool:
         """Check if agent has specific capability"""
         return capability in self.capabilities
