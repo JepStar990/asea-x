@@ -2,6 +2,9 @@
 ASEA-X Main Application - Updated with Phase 3 features
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import asyncio
 import signal
 import sys
@@ -434,6 +437,90 @@ class ASEAX:
             return f"Unknown monitor command: {subcommand}"
 
 @app.command()
+def repl(
+    workdir: Path = typer.Option(
+        "./workdir",
+        "--workdir", "-w",
+        help="Working directory for ASEA-X"
+    ),
+):
+    """Simple REPL — no TUI, just type and talk"""
+    # Silence all console logging — everything still goes to asea-x.log
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if isinstance(handler, RichHandler):
+            handler.setLevel(logging.ERROR)  # Only show critical errors on screen
+
+    asea_x = ASEAX(workdir)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        success = loop.run_until_complete(asea_x.start())
+        if not success:
+            console.print("[red]Failed to start ASEA-X[/red]")
+            loop.close()
+            sys.exit(1)
+
+        # Background thread for the asyncio event loop
+        def run_loop():
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
+
+        loop_thread = threading.Thread(target=run_loop, daemon=True)
+        loop_thread.start()
+
+        # Wire up the UI event loop so commands can be dispatched
+        asea_x.ui.set_loop(loop)
+
+        from rich.prompt import Prompt
+        from rich.markdown import Markdown
+
+        state = asea_x.state_manager.get_state()
+        console.print(f"  [bold cyan]ASEA-X[/bold cyan]  │  Model: {asea_x.llm_client.config.model}  │  Mode: {state.current_mode}")
+        console.print()
+
+        while asea_x.running:
+            try:
+                state = asea_x.state_manager.get_state()
+                mode = state.current_mode
+                user_input = Prompt.ask(f"  [bold green]⏺[/bold green] [{mode}]")
+
+                if user_input.strip().lower() in {'exit', 'quit', 'q', '/exit'}:
+                    break
+
+                # Dispatch to orchestrator and wait for response
+                with console.status("[dim]…[/dim]", spinner="dots"):
+                    future = asyncio.run_coroutine_threadsafe(
+                        asea_x.orchestrator.process_input(user_input),
+                        loop
+                    )
+                    result = future.result(timeout=60)
+
+                if result:
+                    console.print(Markdown(result))
+                    console.print()
+
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Interrupted. Type /exit to quit.[/yellow]")
+            except Exception as e:
+                console.print(f"[red]Error: {e}[/red]")
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        asea_x.running = False
+        try:
+            fut = asyncio.run_coroutine_threadsafe(asea_x.stop(), loop)
+            fut.result(timeout=5)
+        except Exception:
+            pass
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=3)
+        loop.close()
+
+@app.command()
 def start(
     workdir: Path = typer.Option(
         "./workdir",
@@ -458,6 +545,9 @@ def start(
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    _shutting_down = threading.Event()
+    loop_thread = None
+
     # Start system initialization on this loop
     try:
         success = loop.run_until_complete(asea_x.start())
@@ -474,38 +564,24 @@ def start(
         loop_thread = threading.Thread(target=run_loop, daemon=True)
         loop_thread.start()
 
-        # Setup signal handlers (run in MAIN thread)
         def signal_handler(signum, frame):
-            console.print("\n[yellow]Shutting down...[/yellow]")
-            # Tell UI to stop
-            try:
-                asea_x.ui.running = False
-                asea_x.ui.stop()
-            except Exception:
-                pass
-
-            # Stop system asynchronously
-            try:
-                fut = asyncio.run_coroutine_threadsafe(asea_x.stop(), loop)
-                fut.result(timeout=10)
-            except Exception:
-                pass
-
-            # Stop loop
-            loop.call_soon_threadsafe(loop.stop)
+            if _shutting_down.is_set():
+                return  # Already shutting down, ignore repeated signals
+            _shutting_down.set()
+            # Just tell the UI to exit — the finally block handles the rest
+            asea_x.ui.running = False
 
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
         if ui:
             console.print("[green]✅ Rich UI started.[/green]")
-            console.print("[yellow]Press Ctrl+C to exit.[/yellow]")
+            console.print("[yellow]Type /exit or press Ctrl+C to exit.[/yellow]")
 
             # IMPORTANT: UI runs in MAIN thread (blocking input)
             asea_x.ui.start()
         else:
             console.print("[yellow]Running without UI. Press Ctrl+C to exit.[/yellow]")
-            # If no UI, just wait here while loop runs
             try:
                 while True:
                     time.sleep(0.5)
@@ -513,23 +589,19 @@ def start(
                 pass
 
     except KeyboardInterrupt:
-        console.print("\n[yellow]Shutting down...[/yellow]")
+        pass  # Let finally block handle everything
     finally:
-        # Clean shutdown
+        # One-shot clean shutdown
+        _shutting_down.set()
         try:
             fut = asyncio.run_coroutine_threadsafe(asea_x.stop(), loop)
-            fut.result(timeout=10)
+            fut.result(timeout=5)
         except Exception:
             pass
 
         loop.call_soon_threadsafe(loop.stop)
-
-        # Give background loop thread time to exit
-        try:
-            loop_thread.join(timeout=2)
-        except Exception:
-            pass
-
+        if loop_thread is not None:
+            loop_thread.join(timeout=3)
         loop.close()
 
 @app.command()

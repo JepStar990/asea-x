@@ -3,6 +3,7 @@ Command Executor - Safely executes system commands
 with timeout, monitoring, and safety checks
 """
 
+import os
 import subprocess
 import shlex
 import asyncio
@@ -205,11 +206,22 @@ class CommandExecutor:
     ) -> CommandResult:
         """
         Synchronous version of execute
-        
+
         Returns:
             CommandResult
         """
-        return asyncio.run(self.execute(command, timeout, cwd, env, allow_unsafe))
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.execute(command, timeout, cwd, env, allow_unsafe))
+        else:
+            # Already inside a running event loop — run in a new thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                fut = pool.submit(
+                    asyncio.run, self.execute(command, timeout, cwd, env, allow_unsafe)
+                )
+                return fut.result(timeout=(timeout or 300) + 10)
     
     async def execute_with_retry(
         self,

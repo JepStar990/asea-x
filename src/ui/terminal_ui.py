@@ -3,8 +3,9 @@ Rich Terminal UI for ASEA-X
 Provides beautiful, interactive terminal interface
 """
 
+from __future__ import annotations
+
 import asyncio
-import threading
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -57,7 +58,7 @@ class TerminalUI:
         # Event queue for async updates
         self.event_queue = Queue()
         self.running = False
-        self.update_thread: Optional[threading.Thread] = None
+        self._pending_future = None
 
         # UI state
         self.messages: List[Dict[str, Any]] = []
@@ -117,15 +118,11 @@ class TerminalUI:
         """Start the UI"""
         self.running = True
 
-        # Start update thread
-        self.update_thread = threading.Thread(target=self._update_loop, daemon=True)
-        self.update_thread.start()
-
-        # Start live display
+        # Start live display — no background thread, all updates in main loop
         self.live = Live(
             self.layout,
             console=self.console,
-            refresh_per_second=4,
+            refresh_per_second=10,
             screen=False
         )
 
@@ -135,17 +132,8 @@ class TerminalUI:
     def stop(self):
         """Stop the UI"""
         self.running = False
-        if self.update_thread:
-            self.update_thread.join(timeout=2)
-
         if self.live:
             self.live.stop()
-
-    def _pause_updates(self):
-        self._updates_paused = True
-
-    def _resume_updates(self):
-        self._updates_paused = False
 
     def post_event(self, event: UIEvent):
         """Post an event to the UI"""
@@ -155,33 +143,23 @@ class TerminalUI:
         """Set the asyncio loop that is actually running the orchestrator."""
         self.loop = loop
 
-    def _update_loop(self):
-        """Background update loop"""
-        while self.running:
+    def _drain_events(self):
+        """Process all pending events from the queue (call from main thread)."""
+        for _ in range(50):
             try:
-                # Process events
-                for _ in range(50):
-                    try:
-                        event = self.event_queue.get_nowait()
-                        self._handle_event(event)
-                    except Empty:
-                        break
+                event = self.event_queue.get_nowait()
+                self._handle_event(event)
+            except Empty:
+                break
 
-                # Update UI components
-                self._update_header()
-                self._update_messages()
-                self._update_status()
-                self._update_tasks()
-                self._update_progress()
-                self._update_footer()
-                if self.live:
-                    self.live.refresh()
-
-                time.sleep(0.25)  # Update 4 times per second
-
-            except Exception as e:
-                self.console.print(f"[red]UI Update Error: {e}[/red]")
-                time.sleep(1)
+    def _update_panels(self):
+        """Update all layout panels without forcing a terminal repaint."""
+        self._update_header()
+        self._update_messages()
+        self._update_status()
+        self._update_tasks()
+        self._update_progress()
+        self._update_footer()
 
     def _handle_event(self, event: UIEvent):
         """Handle UI events"""
@@ -241,6 +219,7 @@ class TerminalUI:
                 self.orchestrator.process_input(command),
                 self.loop
             )
+            self._pending_future = future
 
             def _done_callback(fut):
                 try:
@@ -259,62 +238,54 @@ class TerminalUI:
             future.add_done_callback(_done_callback)
 
     def _main_loop(self):
-        """Main UI loop for input handling"""
+        """Main UI loop — runs in main thread, owns all display updates.
+
+        Layout panels are updated directly via _update_panels() which mutates
+        the shared Layout tree.  Live's internal timer (refresh_per_second=10)
+        repaints automatically — we never call live.refresh() ourselves to
+        avoid double-rendering flicker.
+        """
         while self.running:
-            if getattr(self, "_updates_paused", False):
-                time.sleep(0.05)
-                continue
-
             try:
-                # Get user input
+                # Show any pending events before prompting
+                self._drain_events()
+                self._update_panels()
+
+                # Get user input via Rich's Live-compatible input method
                 prompt = self._get_input_prompt()
+                user_input = self.live.console.input(prompt)
 
-                # Temporarily suspend Live to allow stdin
-                if self.live:
-                    self.live.stop()
-
-                try:
-                    self.console.print(prompt, end="")
-                    user_input = input()
-                finally:
-                    if self.live:
-                        self.live.start()
-                        # Force a repaint immediately after restarting Live
-                        self.live.refresh()
-
-                # Always echo user input first
+                # Echo user input
                 self.post_event(UIEvent(
                     type="message",
-                    data={
-                        "content": user_input,
-                        "sender": "user"
-                    }
+                    data={"content": user_input, "sender": "user"}
                 ))
 
-                # Give the update thread a moment to consume the event
-                time.sleep(0.02)
+                # Handle exit conditions
+                if user_input.strip().lower() in {'exit', 'quit', 'q', '/exit'}:
+                    self.running = False
+                    break
 
-                # Force UI refresh so the message shows immediately
-                if self.live:
-                    self.live.refresh()
-
-                # Always send input into the pipeline
-                self.post_event(UIEvent(
+                # Dispatch command to orchestrator (async, stores _pending_future)
+                self._handle_event(UIEvent(
                     type="command",
                     data={"input": user_input}
                 ))
 
-                # Give the update thread a moment to consume the command event too
-                time.sleep(0.02)
+                # Wait for the async response — update panels but
+                # let Live's internal timer pace terminal repaints
+                deadline = time.time() + 30
+                while self._pending_future and not self._pending_future.done():
+                    self._drain_events()
+                    self._update_panels()
+                    if time.time() > deadline:
+                        break
+                    time.sleep(0.1)
 
-                # Refresh again
-                if self.live:
-                    self.live.refresh()
-
-                # Now handle exit conditions
-                if user_input.strip().lower() in ['exit', 'quit', 'q', '/exit']:
-                    self.running = False
-                    break
+                # Drain final events
+                self._drain_events()
+                self._update_panels()
+                self._pending_future = None
 
             except KeyboardInterrupt:
                 self.console.print("\n[yellow]Interrupted. Press Ctrl+C again to exit.[/yellow]")
@@ -392,7 +363,7 @@ class TerminalUI:
         messages_table.add_column("From", width=10)
         messages_table.add_column("Message", ratio=1)
 
-        for msg in self.messages[-15:]:  # Show last 15 messages
+        for msg in self.messages[-25:]:  # Show last 25 messages
             # Format time
             dt = datetime.fromtimestamp(msg["timestamp"])
             time_str = dt.strftime("%H:%M:%S")
@@ -413,10 +384,7 @@ class TerminalUI:
             else:
                 message_text = Text(content)
 
-            # Truncate long messages
-            if len(content) > 100:
-                message_text = Text(content[:97] + "...")
-
+            # Show full messages — Rich handles wrapping naturally
             messages_table.add_row(time_str, sender_text, message_text)
 
         self.layout["messages"].update(

@@ -3,6 +3,8 @@ Orchestrator Agent - The brain of ASEA-X
 Coordinates all agents and manages system flow
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 from typing import Dict, List, Optional, Any, Set
@@ -715,37 +717,49 @@ class Orchestrator:
         return suggestions
     
     def _format_response(self, agent_response: AgentResponse, next_steps: List[str]) -> str:
-        """Format system response"""
+        """Format system response — keep code in files, not in chat."""
         response_parts = []
-        
+
         # Add main message
         response_parts.append(agent_response.message)
-        
-        # Add data if present
+
+        # Add data if present — but never dump full code into the chat
         if agent_response.data:
-            # Format code if present
-            if "code" in agent_response.data:
-                response_parts.append(f"\n```python\n{agent_response.data['code']}\n```")
-            
-            # Format diff if present
-            if "diff" in agent_response.data:
-                response_parts.append(f"\n```diff\n{agent_response.data['diff']}\n```")
-            
-            # Format plan if present
+            # Show file list instead of code content
+            files = agent_response.data.get("files_created") or agent_response.data.get("files_modified") or []
+            if not files and "file" in agent_response.data:
+                files = [agent_response.data["file"]]
+            if files:
+                response_parts.append("\n**Files:**")
+                for f in files:
+                    response_parts.append(f"  • `{f}`")
+
+            # Lint results
+            if "lint_results" in agent_response.data:
+                lint = agent_response.data["lint_results"]
+                if isinstance(lint, dict) and lint.get("passed"):
+                    response_parts.append("\n✅ Lint checks passed")
+                elif isinstance(lint, dict):
+                    issues = lint.get("issues", [])
+                    response_parts.append(f"\n⚠️ Lint: {len(issues)} issue(s)")
+
+            # Plan summary
             if "plan" in agent_response.data:
                 plan = agent_response.data["plan"]
-                response_parts.append(f"\n**Plan:**\n{plan}")
-        
+                if len(str(plan)) > 300:
+                    plan = str(plan)[:297] + "..."
+                response_parts.append(f"\n**Plan:** {plan}")
+
         # Add next steps if any
         if next_steps:
             response_parts.append("\n**Suggested next steps:**")
             for i, step in enumerate(next_steps, 1):
-                response_parts.append(f"{i}. {step}")
-        
+                response_parts.append(f"  {i}. {step}")
+
         # Add error if present
         if agent_response.error:
             response_parts.append(f"\n⚠️ **Error:** {agent_response.error}")
-        
+
         return "\n".join(response_parts)
     
     async def _load_file(self, file_path: str) -> str:

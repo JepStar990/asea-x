@@ -67,7 +67,30 @@ class DeveloperAgent(BaseAgent):
         # Execution environment
         self.workdir = Path("./workdir/dev")
         self.workdir.mkdir(exist_ok=True, parents=True)
-    
+
+    def _venv_dir(self) -> Path:
+        return self.workdir / ".venv"
+
+    def _venv_python(self) -> str:
+        return str(self._venv_dir() / "bin" / "python")
+
+    def _venv_pip(self) -> str:
+        return str(self._venv_dir() / "bin" / "pip")
+
+    def _ensure_venv(self) -> None:
+        venv_dir = self._venv_dir()
+        if not venv_dir.exists():
+            subprocess.run(
+                ["python3", "-m", "venv", str(venv_dir)],
+                check=True,
+                cwd=self.workdir
+            )
+            subprocess.run(
+                [self._venv_python(), "-m", "pip", "install", "--upgrade", "pip"],
+                check=False,
+                cwd=self.workdir
+            )
+
     async def execute(self, context: AgentContext) -> AgentResponse:
         """
         Execute development task
@@ -214,30 +237,6 @@ class DeveloperAgent(BaseAgent):
                     message=f"Cannot install {dep}: {safety_check.reason}",
                     requires_human_input=True,
                     next_step="Use /unsafe on to enable installation"
-                )
-
-        def _venv_dir(self) -> Path:
-            return self.workdir / ".venv"
-
-        def _venv_python(self) -> str:
-            return str(self._venv_dir() / "bin" / "python")
-
-        def _venv_pip(self) -> str:
-            return str(self._venv_dir() / "bin" / "pip")
-
-        def _ensure_venv(self) -> None:
-            venv_dir = self._venv_dir()
-            if not venv_dir.exists():
-                subprocess.run(
-                    ["python3", "-m", "venv", str(venv_dir)],
-                    check=True,
-                    cwd=self.workdir
-                )
-                # Upgrade pip inside venv (optional but helpful)
-                subprocess.run(
-                    [self._venv_python(), "-m", "pip", "install", "--upgrade", "pip"],
-                    check=False,
-                    cwd=self.workdir
                 )
 
         self._ensure_venv()

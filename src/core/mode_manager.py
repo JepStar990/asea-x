@@ -3,6 +3,8 @@ Mode management system for ASEA-X
 Handles system mode transitions and validation
 """
 
+from __future__ import annotations
+
 from enum import Enum
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
@@ -321,5 +323,3 @@ class ModeManager:
         return None
 
 
-# Import time at the end to avoid circular dependency
-import time

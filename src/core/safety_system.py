@@ -5,9 +5,11 @@ Prevents dangerous operations and enforces safety constraints
 
 from __future__ import annotations
 
+import fnmatch
+import json
 import re
 import shlex
-from typing import List, Set, Optional, Tuple
+from typing import Dict, Any, List, Set, Optional, Tuple
 from pathlib import Path
 import logging
 from dataclasses import dataclass, field
@@ -596,7 +598,3 @@ class SafetySystem:
         )
 
 
-# Import needed modules at the end
-import json
-import fnmatch
-from typing import Dict, Any

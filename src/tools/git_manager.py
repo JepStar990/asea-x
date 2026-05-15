@@ -260,7 +260,7 @@ Thumbs.db
             
             # Create new branch
             full_branch_name = f"{self.branch_prefix}{branch_name}"
-            self.repo.git.checkout(b=self.full_branch_name)
+            self.repo.git.checkout(b=full_branch_name)
             
             self.logger.info(f"Created branch: {full_branch_name}")
             return True

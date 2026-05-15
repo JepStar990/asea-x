@@ -3,6 +3,8 @@ Global state management for ASEA-X
 Maintains system-wide state and provides thread-safe access
 """
 
+from __future__ import annotations
+
 import json
 import threading
 from pathlib import Path
@@ -12,7 +14,11 @@ from enum import Enum
 import time
 
 from pydantic import BaseModel, Field
-import redis
+
+try:
+    import redis
+except ImportError:
+    redis = None  # type: ignore
 
 
 class TaskStatus(str, Enum):
@@ -87,13 +93,22 @@ class StateManager:
         
         self.load_state()
     
+    @staticmethod
+    def _serialize_state(state_data: dict) -> dict:
+        """Convert sets to lists for JSON serialization."""
+        for field in ('active_agents', 'dependencies_installed'):
+            if field in state_data and isinstance(state_data[field], set):
+                state_data[field] = list(state_data[field])
+        return state_data
+
     def save_state(self) -> None:
         """Save state to disk"""
         with self.lock:
             state_data = self._state.dict()
+            state_data = self._serialize_state(state_data)
             with open(self.state_file, 'w') as f:
                 json.dump(state_data, f, indent=2, default=str)
-            
+
             # Also save to Redis if available
             if self.redis_client:
                 self.redis_client.set(
@@ -108,11 +123,16 @@ class StateManager:
                 try:
                     with open(self.state_file, 'r') as f:
                         state_data = json.load(f)
-                    
+
                     # Convert path strings back to Path objects
                     if 'workdir' in state_data:
                         state_data['workdir'] = Path(state_data['workdir'])
-                    
+
+                    # Convert lists back to sets for set-typed fields
+                    for field in ('active_agents', 'dependencies_installed'):
+                        if field in state_data and isinstance(state_data[field], list):
+                            state_data[field] = set(state_data[field])
+
                     self._state = SystemState(**state_data)
                 except Exception as e:
                     print(f"Failed to load state: {e}")
